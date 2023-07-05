@@ -11,10 +11,10 @@ This writeup and associated repo will be built for configuring RKE2 to handle GP
 ---
 
 > **Table of Contents**
-> * [Hardware Considerations]
-> * [Software Considerations]
-> * [Nvidia Operator]
-> * [Metrics / Observability]
+> * [Hardware Considerations](#hardware-considerations)
+> * [Software Considerations](#software-considerations)
+> * [Nvidia Operator](#nvidia-operator)
+> * [Metrics / Observability](#metrics--observability)
 > * [Running Workloads]
 
 ---
@@ -72,3 +72,16 @@ The Nvidia operator is a K8S installable that will follow on with an install of 
 * tying to Rancher Monitoring
 * example of helm chart config
 * example of nvidia grafana dashboard (https://grafana.com/grafana/dashboards/6387-gpus/)
+
+## Running Workloads
+This is probably the most discussed topic that I get questioned on. Once you've got the GPUs up and running, how do you PROVE they can do actual GPU-based work? Nvidia doesn't provide much help there and to be honest their test code using things like `vectoradd` is vastly sub-par on many levels. 
+
+The biggest gripe I have with `vectoradd` and other examples is that while it is a container that Nvidia publishes, it is tightly coupled to the version of the driver you are using on the node. This breaks the Kubernetes/app-platform abstraction making a pod explicitly dependent on a very specific configuration at the node level. Many times `vectoradd` does not support the newest driver or whatever driver version a customer is using so they are forced to downgrade their drivers in order to run a test. This is silly.
+
+The second biggest gripe is that `vectoradd` and other examples aren't really taxing the GPU at all. It's like having a racecar with track-ready suspesion, brakes, and huge powerband and 'testing' it by rolling around a parking lot. 
+
+-- insert racecar parked at grocery store image --
+
+In the now-exploding AI market there are quite a few toolsets out there leveraging PyTorch and other apps in order to deliver outputs from AI modeling. The two most notorious at the time of publishing is ChatGPT and StableDiffusion/Midjourney. While we're still a ways off from ChatGPT running on RKE2 as the hardware requirements for it are reportedly HUGE, StableDiffusion is perfectly capable of running on a local machine with a single consumer-grade GPU. I found a semi-containerized version of an SD UI and was able to port it and run it in RKE2 on top of Harvester using a simple Ryzen9-based miniPC along with an RTX3060 GPU. It didn't always function perfectly as the front-end UI was not designed to work over a high-latency web-app interface. Now, 8 months later, the market has accelerated and there are other more mature container apps available now.
+
+I recommend beginning your journey working to get Automatic1111 up and running as a K8S container. As this doc develops, I will go step by step on how I made that happen. But the beginnings are [here](https://github.com/AbdBarho/stable-diffusion-webui-docker/tree/master). This particular setup is designed around a docker-compose scheme, and while not exactly K8S-native, under the hood it builds the containers we need and can use. Everything here describes both how to make the containers, their source images, as well as ports/access that has to happen. So I will be working from this starting point.
