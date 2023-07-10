@@ -13,9 +13,9 @@ This writeup and associated repo will be built for configuring RKE2 to handle GP
 > **Table of Contents**
 > * [Hardware Considerations](#hardware-considerations)
 > * [Software Considerations](#software-considerations)
-> * [Nvidia Operator](#nvidia-operator)
-> * [Metrics / Observability](#metrics--observability)
-> * [Running Workloads]
+> * [Nvidia Operator Howto](#nvidia-operator)
+> * [Metrics / Observability in Prometheus (via Rancher Monitoring too)](#metrics--observability)
+> * [Running Workloads](#running-workloads)
 
 ---
 
