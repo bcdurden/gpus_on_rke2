@@ -26,17 +26,17 @@ Nvidia is going to be the subject of this doc, while it is possible to get AMD's
 
 Nvidia has essentially two different classifications of GPUs, I like to distinguish them as consumer and enterprise grade cards. On the bright-side, the consumer-grade cards are an AMAZING value for doing infrastructure testing and even development/POCs on. Many of them are quite fast and/or have significant amounts of VRAM available to do a lot of work. An RTX3060 card can be had with 12gb VRAM for relatively cheap (~$350 as of this writing) and makes for a great card running Stable Diffusion
 
-Where Enterprise-grade cards shine the most is their featureset. Consumer cards are great at running single workloads but need significant assistance in order to share workloads. When running in Kubernetes like RKE2, being able to share multiple workloads across multiple nodes is the biggest reason it has become so popular. So not having some of these capabilities can prevent consumer cards from being a viable option in an enterprise-grade and/or production deployment. This is aside from the fact that the enterprise cards come with significantly more capacity for gpu-compute and vram.
+Where Enterprise-grade cards shine the most is their featureset. Consumer cards are great at running single workloads but need significant assistance in order to share workloads. When running in Kubernetes like RKE2, being able to share multiple workloads across multiple nodes is one of the biggest reasons enterprise cards have become so popular. So not having some of these capabilities can prevent consumer cards from being a viable option in an enterprise and/or production deployment. This is aside from the fact that the enterprise cards come with significantly more capacity for gpu-compute and vram in addtion to better heat tolerance and longevity.
 
 -- TODO: insert chart with nvidia enterprise cards --
 
-So when considering hardware, consider what you're trying to do. You cannot use MIG on consumer cards and even on many enterprise-grade cards, so sharing many workloads on a single GPU is just not possible in a memory/compute-secure manner (timeslicing is a different subject and isn't secure). If you don't need MIG and/or have many GPUs to share on multiple hosts, then you're good.
+So when considering hardware, consider what you're trying to do. You cannot use MIG on consumer cards and even on many still-viable enterprise-grade cards, so sharing many workloads on a single GPU is just not possible in a memory/compute-secure manner (timeslicing is a different subject and isn't secure but that may not matter for you). If you don't need MIG and/or have many GPUs to share on multiple hosts, then you're good.
 
 ## Software Considerations
 
-Diving into software for a minute, let's address when/where these workloads are going to run. The subject of this doc is going to be working within RKE2 which uses containerd by default as do most Kubernetes distributions. If you are using docker, then you are on your own as I haven't tested using docker on RKE2. I tend to go where my customers are in terms of infrastructure dependencies and very very few are using docker in any capacity beyond building container images.
+Diving into software for a minute, let's address when/where these workloads are going to run. The subject of this doc is going to be working within RKE2 which uses containerd by default as do most Kubernetes distributions. If you are using docker, then you are on your own as I haven't tested using docker on RKE2 and frankly the industry has moved away from docker running containers in Kubernetes. I tend to go where my customers are in terms of infrastructure dependencies and very very few are using docker in any capacity beyond building container images or the odd docker-compose on a VM somewhere.
 
-RKE2 is Kubernetes and as such it is designed to abstract away the infrastructure running underneath it. This means RKE2 will function with nvidia GPUs as I describe whether you are running bare metal or hypervisor. If the PCI devices can get direct mapped to the RKE2 worker node(s) then you should meet success pretty easily. Bare metal is certainly easier to test but obviously significantly harder to automate as provisioning a bare metal machine is not a 'solved problem' quite yet even though there are solutions out there.
+RKE2 is Kubernetes and as such it is designed to abstract away the infrastructure running underneath it. This means RKE2 will function with nvidia GPUs as I describe whether you are running bare metal or hypervisor. If the PCI devices can get direct mapped to the RKE2 worker node(s) then you should meet success pretty easily when running in a hypervisor-based infrastructure. Bare metal is certainly easier to test but obviously significantly harder to automate as provisioning a bare metal machine is not a 'solved problem' quite yet even though there are solutions out there.
 
 This doc assumes you have installed an RKE2 cluster on a typical 1/3 configuration for simplicity, so one control-plane node and 3 workers. You don't HAVE to have 3 workers, but that's just what I'm assuming here and you'll know why soon.
 
@@ -50,18 +50,74 @@ With MIG, a single GPU can be sliced into multiple virtual devices (with their o
 
 ### Driver considerations
 
-Nvidia's Linux drivers are quite easy to install regardless of your distribution (within reason). This is a consideration based on the nature of the Operator. The operator itself will install the driver if directed, but I have personally seen issues with the driver installation on RHEL and Rocky OS installations. And due to the kernel-modification nature of the driver, some security teams require major changes to VM instances like that to go through vetting. So I usually install the driver as part of the VM provisioning process. Within Rancher MCM this is an easy `cloud-init` line, but the Nvidia drivers for most OS's are already handled by the OS-level package manager (`yum`,`rpm`,`dpkg`,`apt`,`zypper`). 
+Nvidia's Linux drivers are quite easy to install regardless of your distribution (within reason). This is a consideration based on the nature of the Operator. The operator itself will install the driver if directed, but I have personally seen issues with the driver installation on RHEL and Rocky OS installations. Given how IBM/RHEL has gone closed-source, I wouldn't expect a community fix for this anytime soon. And due to the kernel-modification nature of the driver, some security teams require major changes to VM instances like that to go through vetting. This isn't just containers here, this is the actual driver as well as a specialized nvidia-containerd runtime.
+
+Given the above and that I typically want a generalized solution that works for all, I usually install the driver as part of the VM provisioning process as opposed to letting the operator do it. Within Rancher MCM this is an easy `cloud-init` line, but the Nvidia drivers for most OS's are already handled by the OS-level package manager (`yum`,`rpm`,`dpkg`,`apt`,`zypper`). The driver itself is tightly coupled to the container image versions of each component in the operator. So when doing upgrades, this is something that will have to be watched closely.
 
 For Ubuntu and SLES, this can be done using the `nvidia-driver-XYZ` package and may require a reboot. Using the `nvidia-smi` tool on the command-line can allow one to see the available GPUs.
 
 -- insert example of nvidia-smi --
 
 ## Operator installation
-The Nvidia operator is a K8S installable that will follow on with an install of a set of Nvidia tools designed to expose the GPU for containerized workloads in a Kubernetes-native way. It has a significant amount of features and they are exposed within the helmchart. The way we reference the operator here will cover the helmchart method. It has received significant upgrades in recent years which has made a lot of previous howtos around Nvidia GPUs and RKE2 or K8S obsolete. The biggest change is the capability of modifying the containerd configuration on the node as well as installing the nvidia containerd runtime, both of which were manual efforts.
+The Nvidia operator is a K8S installable that will follow on with an install of a set of Nvidia tools designed to expose the GPU for containerized workloads in a Kubernetes-native way. It has a significant amount of features and they are exposed within the helmchart. The way we reference the operator here will cover the helmchart method. It has received significant upgrades in recent years which has made a lot of previous howtos around Nvidia GPUs and RKE2 or K8S obsolete. The biggest change is the capability of automatically modifying the containerd configuration on the node as well as installing the nvidia containerd runtime, both of which were manual efforts. This drastically reduces the amount of pre-setup for a GPU-based node, essentially making it no different than a regular node other than the PCI device mapping (or in AWS, you just ask for an EC2 instance with a gpu on it)
 
-* cover modifications for containerd
-* cover driver disable/enable
-* show helm example of installation
+Below I'm going to cover changes that need to happen to the helm chart values file. Nvidia's comments are using the `#` notation, but mine will be the `#!` notation so we can see my comments inline. I have two helmchart values files in this repo, one is the default one from upstream Nvidia, the second is my modified one.
+
+### Containerd modifications
+The Nvidia operator expects the `containerd.toml` file and the `sock` file to be located in their default places. RKE2 doesn't use default vanilla K8S file locations, so we need to set those values. 
+
+```yaml
+toolkit:
+  enabled: true
+  repository: nvcr.io/nvidia/k8s
+  image: container-toolkit
+  version: v1.13.0-ubuntu20.04
+  imagePullPolicy: IfNotPresent
+  imagePullSecrets: []
+  env: []  #! Here we set the containerd values using environment vars 
+  #! env:
+  #! - name: CONTAINERD_CONFIG
+  #!   value: /var/lib/rancher/k3s/agent/etc/containerd/config.toml
+  #! - name: CONTAINERD_SOCKET
+  #!   value: /run/k3s/containerd/containerd.sock
+  #! - name: CONTAINERD_RUNTIME_CLASS
+  #!   value: nvidia
+  #! - name: CONTAINERD_SET_AS_DEFAULT
+  #!   value: 'true'
+  #! resources: {}
+  #! installDir: "/usr/local/nvidia"
+```
+
+### Driver Disable
+As stated above, I'm installing the driver as a linux package on my base VMs. Because of that, I'm disabling the driver installer component in the operator:
+
+```yaml
+driver:
+  enabled: true  #! Here we set the driver to disabled
+  #! enabled: false   
+```
+
+### PSP
+If you're using the cis-1.6 profile in RKE2, one of the changes it makes is in PSPs. 1.25 need not apply and uses a different mechanism. If you're using pre 1.25 RKE2 and have a secure or stig-compliant cluster, you'll need psp enabled
+
+```yaml
+psp:
+  enabled: false  #! if you are using cis-1.6 profile (which you should be in a secured environment), you'll need the PSPs to get generated here. Unsure of 1.25 implications here
+  #! enabled: true 
+```
+
+### MIG
+By default the MIG manager is enabled and leaving it on will not affect non-MIG compliant devices as MIG-enabled devices at the driver level show up as physical interfaces. One thing to be aware of is in a multi-GPU arrangement on a single node. The mig strategy needs to be considered. Read [here](https://docs.nvidia.com/datacenter/cloud-native/kubernetes/latest/index.html#using-mig-strategies-in-kubernetes) for more information. I am leaving MIG ignored for now as I have no way of verifying various tweaks easily.
+
+
+### Helm Installation
+Using helm, we can install the operator using the values file we have built. Ensure your kube context is pointed at a valid RKE2 instance with at least one GPU node.
+
+```bash
+helm repo add nvidia https://helm.ngc.nvidia.com/nvidia![Alt text](https://files.slack.com/files-pri/T051C3C2NBV-F05HC8U5MRV/screenshot_2023-07-19_at_10.53.56_am.png)
+helm install nvidia/gpu-operator -f operator_values_modified.yaml
+```
+
 * what to look for determining success/fail
 * secondary tests
 * mentions around MIG
