@@ -9,7 +9,7 @@ nfd:
   enabled: true
 
 psp:
-  enabled: true
+  enabled: false
 
 cdi:
   enabled: false

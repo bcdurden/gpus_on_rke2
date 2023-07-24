@@ -56,7 +56,31 @@ Given the above and that I typically want a generalized solution that works for 
 
 For Ubuntu and SLES, this can be done using the `nvidia-driver-XYZ` package and may require a reboot. Using the `nvidia-smi` tool on the command-line can allow one to see the available GPUs.
 
--- insert example of nvidia-smi --
+Here I installed the `nvidia-driver-525` package in Ubuntu and this is the result of using `nvidia-smi` to verify the driver is running and communicating with the GPU. Be aware that the processes this is showing may differ from what you see as I am running my RKE2 singleton node on an Ubuntu Desktop instance.
+```bash
+Thu Jul 20 15:19:27 2023       
++-----------------------------------------------------------------------------+
+| NVIDIA-SMI 525.125.06   Driver Version: 525.125.06   CUDA Version: 12.0     |
+|-------------------------------+----------------------+----------------------+
+| GPU  Name        Persistence-M| Bus-Id        Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp  Perf  Pwr:Usage/Cap|         Memory-Usage | GPU-Util  Compute M. |
+|                               |                      |               MIG M. |
+|===============================+======================+======================|
+|   0  NVIDIA GeForce ...  Off  | 00000000:01:00.0  On |                  N/A |
+|  0%   53C    P5    11W / 170W |    161MiB / 12288MiB |      0%      Default |
+|                               |                      |                  N/A |
++-------------------------------+----------------------+----------------------+
+                                                                               
++-----------------------------------------------------------------------------+
+| Processes:                                                                  |
+|  GPU   GI   CI        PID   Type   Process name                  GPU Memory |
+|        ID   ID                                                   Usage      |
+|=============================================================================|
+|    0   N/A  N/A      1927      G   /usr/lib/xorg/Xorg                 87MiB |
+|    0   N/A  N/A      2126      G   /usr/bin/gnome-shell               69MiB |
+|    0   N/A  N/A      4653      G   gnome-control-center                2MiB |
++-----------------------------------------------------------------------------+
+```
 
 ## Operator installation
 The Nvidia operator is a K8S installable that will follow on with an install of a set of Nvidia tools designed to expose the GPU for containerized workloads in a Kubernetes-native way. It has a significant amount of features and they are exposed within the helmchart. The way we reference the operator here will cover the helmchart method. It has received significant upgrades in recent years which has made a lot of previous howtos around Nvidia GPUs and RKE2 or K8S obsolete. The biggest change is the capability of automatically modifying the containerd configuration on the node as well as installing the nvidia containerd runtime, both of which were manual efforts. This drastically reduces the amount of pre-setup for a GPU-based node, essentially making it no different than a regular node other than the PCI device mapping (or in AWS, you just ask for an EC2 instance with a gpu on it)
@@ -109,25 +133,161 @@ psp:
 ### MIG
 By default the MIG manager is enabled and leaving it on will not affect non-MIG compliant devices as MIG-enabled devices at the driver level show up as physical interfaces. One thing to be aware of is in a multi-GPU arrangement on a single node. The mig strategy needs to be considered. Read [here](https://docs.nvidia.com/datacenter/cloud-native/kubernetes/latest/index.html#using-mig-strategies-in-kubernetes) for more information. I am leaving MIG ignored for now as I have no way of verifying various tweaks easily.
 
+By default, the MIG installation will create a huge configmap that contains all possible configurations of MIG. Each nvidia GPU will have different available MIG configurations available to it. This is due to how the core and memory units are sliced up which depends on the overall total core count and video ram on the GPU.
+
 
 ### Helm Installation
 Using helm, we can install the operator using the values file we have built. Ensure your kube context is pointed at a valid RKE2 instance with at least one GPU node.
 
 ```bash
-helm repo add nvidia https://helm.ngc.nvidia.com/nvidia![Alt text](https://files.slack.com/files-pri/T051C3C2NBV-F05HC8U5MRV/screenshot_2023-07-19_at_10.53.56_am.png)
-helm install nvidia/gpu-operator -f operator_values_modified.yaml
+helm repo add nvidia https://helm.ngc.nvidia.com/nvidia
+helm install nvidia/gpu-operator -f operator_values_modified.yaml -n nvidia --create-namespace
 ```
 
-* what to look for determining success/fail
-* secondary tests
-* mentions around MIG
+Below is a snippet of the log to expect from helm. I used Rancher's UI to install this helm chart from the app catalog. Rancher's MCM will create a window pane at the bottom containing the streaming log of the helm process.
+```bash
+helm install --namespace=nvidia --timeout=10m0s --values=/home/shell/helm/values-gpu-operator-v23.3.2.yaml --version=v23.3.2 --wait=true gpu-operator /home/shell/helm/gpu-operator-v23.3.2.tgz
+2023-07-20T15:29:24.469601568-04:00 creating 1 resource(s)
+creating 2 resource(s)
+...
+
+NAME: gpu-operator
+2023-07-20T15:29:36.874518765-04:00 LAST DEPLOYED: Thu Jul 20 19:29:24 2023
+2023-07-20T15:29:36.874524072-04:00 NAMESPACE: nvidia
+STATUS: deployed
+REVISION: 1
+2023-07-20T15:29:36.874537831-04:00 TEST SUITE: None
+
+2023-07-20T15:29:36.878505171-04:00 ---------------------------------------------------------------------
+SUCCESS: helm install --namespace=nvidia --timeout=10m0s --values=/home/shell/helm/values-gpu-operator-v23.3.2.yaml --version=v23.3.2 --wait=true gpu-operator /home/shell/helm/gpu-operator-v23.3.2.tgz
+---------------------------------------------------------------------
+```
+
+After this point, the operator helmchart has installed correctly. However, this does not mean the install finished successfully. We need to watch the behavior of the operator itself to ensure all components start.
+
+### Determining Successful Install
+Because the install is using an operator, there is a second tier of things we need to watch to ensure the installation worked. The very first thing installed is going to be the `gpu-feature-discovery` set of workload objects. These pods will analyze the nodes to discover whether the nodes do indeed have a GPU available on them. If they are found then the rest of the process is kicked off.
+
+After everything is finished, validation steps are performed by the operator to guarentee a good installation. But first we can look at most of the resources created in the namespace:
+```bash
+> kubectl get all -n nvidia
+NAME                                                              READY   STATUS      RESTARTS   AGE
+pod/gpu-feature-discovery-5czsj                                   1/1     Running     0          4m31s
+pod/gpu-operator-7d64b94d7-h6mnd                                  1/1     Running     0          4m51s
+pod/gpu-operator-node-feature-discovery-master-7db9bfdd5b-4c8w8   1/1     Running     0          4m51s
+pod/gpu-operator-node-feature-discovery-worker-62bfd              1/1     Running     0          4m51s
+pod/nvidia-container-toolkit-daemonset-m8jfv                      1/1     Running     0          4m31s
+pod/nvidia-cuda-validator-z26kk                                   0/1     Completed   0          3m47s
+pod/nvidia-dcgm-exporter-2zsqm                                    1/1     Running     0          4m31s
+pod/nvidia-device-plugin-daemonset-4p484                          1/1     Running     0          4m31s
+pod/nvidia-device-plugin-validator-fzrhs                          0/1     Completed   0          3m30s
+pod/nvidia-operator-validator-px9gz                               1/1     Running     0          4m31s
+
+NAME                                                 TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)    AGE
+service/gpu-operator                                 ClusterIP   10.43.23.103   <none>        8080/TCP   4m31s
+service/gpu-operator-node-feature-discovery-master   ClusterIP   10.43.63.250   <none>        8080/TCP   4m51s
+service/nvidia-dcgm-exporter                         ClusterIP   10.43.41.146   <none>        9400/TCP   4m31s
+
+NAME                                                        DESIRED   CURRENT   READY   UP-TO-DATE   AVAILABLE   NODE SELECTOR                                      AGE
+daemonset.apps/gpu-feature-discovery                        1         1         1       1            1           nvidia.com/gpu.deploy.gpu-feature-discovery=true   4m31s
+daemonset.apps/gpu-operator-node-feature-discovery-worker   1         1         1       1            1           <none>                                             4m51s
+daemonset.apps/nvidia-container-toolkit-daemonset           1         1         1       1            1           nvidia.com/gpu.deploy.container-toolkit=true       4m31s
+daemonset.apps/nvidia-dcgm-exporter                         1         1         1       1            1           nvidia.com/gpu.deploy.dcgm-exporter=true           4m31s
+daemonset.apps/nvidia-device-plugin-daemonset               1         1         1       1            1           nvidia.com/gpu.deploy.device-plugin=true           4m31s
+daemonset.apps/nvidia-mig-manager                           0         0         0       0            0           nvidia.com/gpu.deploy.mig-manager=true             4m31s
+daemonset.apps/nvidia-operator-validator                    1         1         1       1            1           nvidia.com/gpu.deploy.operator-validator=true      4m31s
+
+NAME                                                         READY   UP-TO-DATE   AVAILABLE   AGE
+deployment.apps/gpu-operator                                 1/1     1            1           4m51s
+deployment.apps/gpu-operator-node-feature-discovery-master   1/1     1            1           4m51s
+
+NAME                                                                    DESIRED   CURRENT   READY   AGE
+replicaset.apps/gpu-operator-7d64b94d7                                  1         1         1       4m51s
+replicaset.apps/gpu-operator-node-feature-discovery-master-7db9bfdd5b   1         1         1       4m51s
+```
+
+This looks good, all pods are either running or completed. One of the tests the operator runs is an `InitContainer` within the `nvidia-operator-validator` pod called `toolkit-validation`. You can inspect the log of this container and you should see `nvidia-smi` having successfully run. Much like we ran it on the host node earlier, this one is guarenteeing that it can also run within a container. This ensures both that the GPU is being correctly mapped to the container requesting it as well as the `nvidia-containerd` runtime being successfully executed. When you check, ensure you grab the correct pod name as it always has a UID suffix since it is part of a DaemonSet.
+
+```bash
+> kubectl logs nvidia-operator-validator-px9gz -n nvidia -c toolkit-validation
+Thu Jul 20 19:33:11 2023       
++-----------------------------------------------------------------------------+
+| NVIDIA-SMI 525.125.06   Driver Version: 525.125.06   CUDA Version: 12.0     |
+|-------------------------------+----------------------+----------------------+
+| GPU  Name        Persistence-M| Bus-Id        Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp  Perf  Pwr:Usage/Cap|         Memory-Usage | GPU-Util  Compute M. |
+|                               |                      |               MIG M. |
+|===============================+======================+======================|
+|   0  NVIDIA GeForce ...  Off  | 00000000:01:00.0  On |                  N/A |
+|  0%   54C    P5    11W / 170W |    161MiB / 12288MiB |      0%      Default |
+|                               |                      |                  N/A |
++-------------------------------+----------------------+----------------------+
+                                                                               
++-----------------------------------------------------------------------------+
+| Processes:                                                                  |
+|  GPU   GI   CI        PID   Type   Process name                  GPU Memory |
+|        ID   ID                                                   Usage      |
+|=============================================================================|
++-----------------------------------------------------------------------------+
+```
+
+### MIG Testing
+While I don't have a good example of what MIG looks like when successfully mapped. It will be very similar to the above when the validator container is run. The key difference will be in the number and name of devices showing in the output. If I do get a good example of what MIG looks like in this process, I will show it here.
 
 ## Metrics / Observability
+Part of the GPU operator called the `dcgm-exporter` will snag metrics from the GPU and report them so you can pull them into Prometheus. It is a simple tweak to a Prometheus install via helm to add in the extra scrape configs for this data. Nvidia also provides a canned GPU dashboard for visualization in Grafana. Combining these two together we can show the active metrics on the GPU device(s) including load and temperature. If we need something more sophisticated we can use this dashboard as a starting point as well!
 
-* mention of DCGM exporter
-* tying to Rancher Monitoring
-* example of helm chart config
-* example of nvidia grafana dashboard (https://grafana.com/grafana/dashboards/6387-gpus/)
+Since I am using Rancher, I will use the Rancher Monitoring app from the catalog to install Prometheus and Grafana. We need to add an item to the (by default empty) additionalScapeConfigs list. Here is the section I need to modify within my helmchart values for `Rancher Monitoring`:
+```yaml
+prometheus:
+  prometheusSpec:
+    additionalScrapeConfigs:
+    - job_name: gpu-metrics
+      scrape_interval: 1s
+      metrics_path: /metrics
+      scheme: http
+      kubernetes_sd_configs:
+      - role: endpoints
+        namespaces:
+          names:
+          - nvidia
+      relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_node_name]
+        action: replace
+        target_label: kubernetes_node
+```
+
+### Grafana Dashboard
+To add the Grafana Dashboard, I first need to log into the dashboard with admin priviledges. By default, Rancher puts you in observer mode, so you need to go grab the credentials on your own. If you're using your own Grafana installation, you should know your credentials from the installation. The secret is within `cattle-monitoring-system`:
+
+```bash
+> kubectl get secret rancher-monitoring-grafana -n cattle-monitoring-system -o yaml
+apiVersion: v1
+data:
+  admin-password: cHJvbS1vcGVyYXRvcg==
+  admin-user: YWRtaW4=
+  ldap-toml: ""
+kind: Secret
+metadata:
+  annotations:
+    meta.helm.sh/release-name: rancher-monitoring
+    meta.helm.sh/release-namespace: cattle-monitoring-system
+  creationTimestamp: "2023-07-20T19:59:22Z"
+  labels:
+    app.kubernetes.io/instance: rancher-monitoring
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/version: 9.1.5
+    helm.sh/chart: grafana-6.38.6
+  name: rancher-monitoring-grafana
+  namespace: cattle-monitoring-system
+  resourceVersion: "19291"
+  uid: d5b765ed-3ea1-41e1-a319-3d10b08b38ca
+type: Opaque
+```
+
+I can use `base64 -d` to convert the `admin-password` field to a string and that is my admin password. Once logged in I can import the dashboard into Grafana. The dashboard is located [here](https://grafana.com/grafana/dashboards/6387-gpus/). You can paste that URL or the ID (ID is located on the website in the link).
+![nvidia-dash](images/import_dashboard.png)
 
 ## Running Workloads
 This is probably the most discussed topic that I get questioned on. Once you've got the GPUs up and running, how do you PROVE they can do actual GPU-based work? Nvidia doesn't provide much help there and to be honest their test code using things like `vectoradd` is vastly sub-par on many levels. 
