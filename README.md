@@ -4,6 +4,7 @@ author: Brian Durden
 email: brian.durden@ranchergovernment.com
 ---
 # Configuring GPUs and running GPU workloads on RKE2 (2023 edition)
+![rgs-logo](images/rgs_logo.png)
 
 ## Introduction
 This writeup and associated repo will be built for configuring RKE2 to handle GPUs and it will take into account developments that have occured in the last year or so that make doing so significantly easier to do both manually as well as tying into automation pipelines. I'll try to cover each subject contextually so you can make the best choice for your solution.
@@ -21,14 +22,15 @@ This writeup and associated repo will be built for configuring RKE2 to handle GP
 
 ## Hardware Considerations
 
- -- TODO: insert Nvidia logo --
+![nvidia-logo](images/nvidia_logo.png)
+
 Nvidia is going to be the subject of this doc, while it is possible to get AMD's GPUs up and working in RKE2 they are definitely less further along to the process than Nvidia and it will still require a good deal of manual effort.
 
 Nvidia has essentially two different classifications of GPUs, I like to distinguish them as consumer and enterprise grade cards. On the bright-side, the consumer-grade cards are an AMAZING value for doing infrastructure testing and even development/POCs on. Many of them are quite fast and/or have significant amounts of VRAM available to do a lot of work. An RTX3060 card can be had with 12gb VRAM for relatively cheap (~$350 as of this writing) and makes for a great card running Stable Diffusion
 
 Where Enterprise-grade cards shine the most is their featureset. Consumer cards are great at running single workloads but need significant assistance in order to share workloads. When running in Kubernetes like RKE2, being able to share multiple workloads across multiple nodes is one of the biggest reasons enterprise cards have become so popular. So not having some of these capabilities can prevent consumer cards from being a viable option in an enterprise and/or production deployment. This is aside from the fact that the enterprise cards come with significantly more capacity for gpu-compute and vram in addtion to better heat tolerance and longevity.
 
--- TODO: insert chart with nvidia enterprise cards --
+![nvidia-hardware](images/dgx_a100.png)
 
 So when considering hardware, consider what you're trying to do. You cannot use MIG on consumer cards and even on many still-viable enterprise-grade cards, so sharing many workloads on a single GPU is just not possible in a memory/compute-secure manner (timeslicing is a different subject and isn't secure but that may not matter for you). If you don't need MIG and/or have many GPUs to share on multiple hosts, then you're good.
 
@@ -46,7 +48,7 @@ With a base configuration (without MIG), you are limited to physical GPUs mapped
 
 With MIG, a single GPU can be sliced into multiple virtual devices (with their own secure memory space and compute) and be available to different pods, effectively sharing the GPU. Combined with multiple GPUs per node as well as multiple nodes with GPUs, the scalability of MIG is quite significant.
 
--- insert MIG graphic --
+![nvidia-mig](images/mig.png)
 
 ### Driver considerations
 
