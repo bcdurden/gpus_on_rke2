@@ -298,7 +298,7 @@ The biggest gripe I have with `vectoradd` and other examples is that while it is
 
 The second biggest gripe is that `vectoradd` and other examples aren't really taxing the GPU at all. It's like having a racecar with track-ready suspesion, brakes, and huge powerband and 'testing' it by rolling around a parking lot. 
 
--- insert racecar parked at grocery store image --
+![racecar-grocery](images/f1_grocery.jpg)
 
 In the now-exploding AI market there are quite a few toolsets out there leveraging PyTorch and other apps in order to deliver outputs from AI modeling. The two most notorious at the time of publishing is ChatGPT and StableDiffusion/Midjourney. While we're still a ways off from ChatGPT running on RKE2 as the hardware requirements for it are reportedly HUGE, StableDiffusion is perfectly capable of running on a local machine with a single consumer-grade GPU. I found a semi-containerized version of an SD UI and was able to port it and run it in RKE2 on top of Harvester using a simple Ryzen9-based miniPC along with an RTX3060 GPU. It didn't always function perfectly as the front-end UI was not designed to work over a high-latency web-app interface. Now, 8 months later, the market has accelerated and there are other more mature container apps available now.
 
