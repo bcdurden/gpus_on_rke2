@@ -302,4 +302,182 @@ The second biggest gripe is that `vectoradd` and other examples aren't really ta
 
 In the now-exploding AI market there are quite a few toolsets out there leveraging PyTorch and other apps in order to deliver outputs from AI modeling. The two most notorious at the time of publishing is ChatGPT and StableDiffusion/Midjourney. While we're still a ways off from ChatGPT running on RKE2 as the hardware requirements for it are reportedly HUGE, StableDiffusion is perfectly capable of running on a local machine with a single consumer-grade GPU. I found a semi-containerized version of an SD UI and was able to port it and run it in RKE2 on top of Harvester using a simple Ryzen9-based miniPC along with an RTX3060 GPU. It didn't always function perfectly as the front-end UI was not designed to work over a high-latency web-app interface. Now, 8 months later, the market has accelerated and there are other more mature container apps available now.
 
-I recommend beginning your journey working to get Automatic1111 up and running as a K8S container. As this doc develops, I will go step by step on how I made that happen. But the beginnings are [here](https://github.com/AbdBarho/stable-diffusion-webui-docker/tree/master). This particular setup is designed around a docker-compose scheme, and while not exactly K8S-native, under the hood it builds the containers we need and can use. Everything here describes both how to make the containers, their source images, as well as ports/access that has to happen. So I will be working from this starting point.
+I recommend beginning your journey working to get Automatic1111 up and running as a K8S container. As this doc develops, I will go step by step on how I made that happen. But the beginnings are [here](https://github.com/AbdBarho/stable-diffusion-webui-docker/tree/master). This particular setup is designed around a docker-compose scheme, and while not exactly K8S-native, under the hood it builds the containers we need and can use. Everything here describes both how to make the containers, their source images, as well as ports/access that has to happen. So I will be working from this starting point. 
+
+I have forked this repo for my use, and it is located here at [stable-diffusion-webui-kubernetes](https://github.com/bcdurden/stable-diffusion-webui-kubernetes)
+
+
+### Deconstructing SD WebUI for Docker
+Unfortunately, this app has been written using a pattern that does not translate well to enterprise systems. It is what I consider a 'self-modifying' containerized app and it breaks [12factor rule number 6](https://12factor.net/processes). This is mostly due to the nature of large model data being downloaded live at startup and shared among multiple docker compose apps. The model data should be represented as its own entity that is shared as a resource, but it is instead written as a container. I'm not quite sure what the author was considering here, I can see that having everything docker-compose might seem elegant, but it really just introduces statefulness to the containers that run where none should exist.
+
+There's a few ways to solve this problem. The most straight-forward is to convert everything here into a single Pod where the download container is now a initcontainer. This is still a bit gross as everytime we spin it up it will re-download 12gb of files. Obviously that won't work in an airgap. What we need is something that translates to a persistent volume that we can store and manage as a container.
+
+#### Translating Docker Compose to Kubernetes
+When analyzing the download component, we can see the dockerfile for the `download` profile will download all 12gb of files into a shared directory that the other containers use. This has 90% of what we need here. Instead of downloading the 12gb of files at runtime, we'll move that command to something run at creation-time. Then we can add a runtime command that will untar the resulting model files into a persistent volume managed by Kubernetes.
+
+This:
+```Dockerfile
+FROM bash:alpine3.15
+
+RUN apk add parallel aria2
+COPY . /docker
+RUN chmod +x /docker/download.sh
+ENTRYPOINT ["/docker/download.sh"]
+```
+
+becomes:
+```Dockerfile
+FROM bash:alpine3.15
+
+RUN apk add parallel aria2
+COPY . /docker
+RUN chmod +x /docker/download.sh; chmod +x /docker/init.sh
+RUN /docker/download.sh
+ENTRYPOINT ["/docker/init.sh"]
+```
+
+Note that it is expecting an `init.sh` script. That is a new file located alongside the `download.sh` script. See the file [here](https://github.com/bcdurden/stable-diffusion-webui-kubernetes/blob/master/build/download/init.sh). This file will use a checksum file as a kind of passive lock. We can now build this image and run it as an init container.
+
+TODO: extra stuff to translate
+
+#### Building
+From here we can begin building the containers. Let's use docker to do that since we are using the `Dockerfile` format. I'll write a small script that builds each docker file and tags the build with a registry of our choosing! 
+
+The below should do it.
+```bash
+#!/bin/bash
+
+if [ -z $REGISTRY ];
+then
+    echo "Please set the REGISTRY environment variable with your target registry"
+    exit 1
+fi
+
+echo "Building all Images for target registry: $REGISTRY"
+export DOCKER_BUILDKIT=1
+
+# Keeping this scalable, let's just loop on all directories
+for d in */; do
+    echo "Building $d"
+    pushd $d
+        docker build -t $REGISTRY/stablediffusion/$d .
+    popd
+done
+
+echo "Finished"
+```
+
+After building these images, I can see they are quite large, even without the downloaded models. Because of that, I'm going to pull this only from a local registry, because downloading 30+gb of files over and over is not something I want to do on my home cable internet. If you are intending on replicating this, ensure you've got some serious space in your homelab registry:
+
+```console
+ubuntu@sd-test:~$ docker images
+REPOSITORY                                                 TAG       IMAGE ID       CREATED       SIZE
+harbor.sienarfleet.systems/stablediffusion/invoke          latest    b06dd46970ba   5 hours ago   10.2GB
+harbor.sienarfleet.systems/stablediffusion/download        latest    bc235974ad17   5 hours ago   10.3GB
+harbor.sienarfleet.systems/stablediffusion/comfy           latest    23c857201616   5 hours ago   7.26GB
+harbor.sienarfleet.systems/stablediffusion/automatic1111   latest    77608de8dcbc   5 hours ago   7.08GB
+```
+
+#### Basic Deployment
+Next up is writing some basic Kubernetes code to wrap these images into something usable. We'll start with a basic K8S dpeloyment object and extend from there.
+
+We can observe any command line args that we need to execute these containers by inspecting `docker-compose.yml`. For `automatic1111` we see this:
+
+```yaml
+  auto: &automatic
+    <<: *base_service
+    profiles: ["auto"]
+    build: ./services/AUTOMATIC1111
+    image: sd-auto:63
+    environment:
+      - CLI_ARGS=--allow-code --medvram --xformers --enable-insecure-extension-access --api
+```
+
+This tells me there is a parameter called `CLI_ARGS` getting injected at run-time. We can express this as a environment variable in the container itself, now we just need the entry point which can be found in the Dockerfile for the module.
+
+```Dockerfile
+FROM alpine/git:2.36.2 as download
+
+COPY clone.sh /clone.sh
+
+...
+
+ENTRYPOINT ["/docker/entrypoint.sh"]
+CMD python -u webui.py --listen --port 7860 ${CLI_ARGS}
+```
+
+Based on this, it appears to be already set, so there is no need to override. I can hop into my Rancher UI and quickly create a simple deployment with a single container. Here is the result below with excess comments and data removed for clarity. One thing I had to add was the resource reuquest for the GPU. This pod needs a GPU to function and this resource request will ensure K8S schedules the pod on a node with an available GPU. We can not put this in and it will still function, but kubernetes doesn't provide anything beyond integers when it comes to resources, we'd need a way to slice up the single gpu. Without mig, we can still use time-slicing but that is a topic for another time. I can also alter the command and entrypoint to ensure I'm listening on a port of my choosing. the `runtimeClassName` field is important here as this tells Kubernetes to utilize the nvidia containerd runtime.
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stablediffusion
+  annotations: {}
+  labels:
+    workload.user.cattle.io/workloadselector: apps.deployment-default-stablediffusion
+  namespace: default
+spec:
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      workload.user.cattle.io/workloadselector: apps.deployment-default-stablediffusion
+  template:
+    metadata:
+      labels:
+        workload.user.cattle.io/workloadselector: apps.deployment-default-stablediffusion
+      namespace: default
+    spec:
+      runtimeClassName: nvidia
+      containers:
+        - imagePullPolicy: Always
+          name: automatic1111
+          ports:
+            - containerPort: 8080
+              name: http
+              protocol: TCP
+          image: harbor.sienarfleet.systems/stablediffusion/automatic1111:latest
+          args:
+            - python 
+            - -u 
+            - webui.py
+            - --listen 
+            - --allow-code 
+            - --medvram 
+            - --xformers 
+            - --enable-insecure-extension-access 
+            - --api 
+            - --port 
+            - "8080"
+          volumeMounts:
+            - name: sd-data
+              mountPath: /data
+      imagePullSecrets: []
+      restartPolicy: Always
+      volumes:
+        - persistentVolumeClaim:
+            claimName: pvc-sd-data
+          name: sd-data
+  replicas: 1
+```
+
+We could deploy this, but we'd still be missing the models! Since we've altered the downloads module and moved the module download into a build-time process, we can use the resulting image containing all the models as an init container. I'll now add an init container through the rancher UI.
+
+An init container entry would look like this:
+
+```yaml
+initContainers:
+  - imagePullPolicy: IfNotPresent
+    name: models
+    active: true
+    image: harbor.sienarfleet.systems/stablediffusion/download:latest
+    command:
+      - /docker/init.sh
+    args:
+      - /data
+```
+
+We have several more steps left! First, we need a persistent storage location that can map into the `/data` directory within each container of this pod. The initcontainer will write to this directory and the other containers will only read from it. We also need a persistent storage location for the outputs of each container. Luckily, this is also easy to setup in the Rancher UI. I'll not cover it here, but the whole deployment will be located in a single yaml file. See the [basic deployment file](deploy/basic.yaml) containing these along with the service and ingress objects.
+
+To deploy this file, we just need to use kubectl: `kubectl apply -f deploy/basic.yml`
