@@ -478,6 +478,16 @@ initContainers:
       - /data
 ```
 
-We have several more steps left! First, we need a persistent storage location that can map into the `/data` directory within each container of this pod. The initcontainer will write to this directory and the other containers will only read from it. We also need a persistent storage location for the outputs of each container. Luckily, this is also easy to setup in the Rancher UI. I'll not cover it here, but the whole deployment will be located in a single yaml file. See the [basic deployment file](deploy/basic.yaml) containing these along with the service and ingress objects.
+We have several more steps left! First, we need a persistent storage location that can map into the `/data` directory within each container of this pod. The initcontainer will write to this directory and the other containers will only read from it. We also need a persistent storage location for the outputs of each container. Luckily, this is also easy to setup in the Rancher UI. I'll not cover it here as translating everything is out of the scope of this document, but the whole deployment will be located in a single yaml file for simplicity. See the [basic deployment file](deploy/basic.yaml) containing these along with the service and ingress objects. I am also going to add `Comfy` to the deployment and it can share the downloads directory.
 
-To deploy this file, we just need to use kubectl: `kubectl apply -f deploy/basic.yml`
+To deploy this file, we just need to use kubectl: `kubectl apply -f deploy/basic.yaml`.
+
+Here `Automatic1111` is running via Ingress on my RKE2 Cluster:
+![automatic1111-dashboard](images/automatic1111.png)
+
+Here `ComfyUI` is running via another Ingress, but in the same Pod on my RKE2 Cluster:
+![comfyui-dashboard](images/comfy.png)
+
+Taking `Automatic1111` for a spin to try and reproduce the "racecar at the grocery store" image above:
+TODO
+
